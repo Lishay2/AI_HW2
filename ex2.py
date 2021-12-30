@@ -2,11 +2,8 @@ import itertools
 import random
 import operator
 import copy
+import math
 ids = ["316217835", "206824690"]
-
-
-class EndOfGame(Exception):
-    pass
 
 
 class DroneAgent:
@@ -18,187 +15,197 @@ class DroneAgent:
         self.clients= initial['clients']
         self.turnsToGo = initial['turns to go']
         self.factor=1
-        self.actionsCalculated=dict()
+        self.actionsCalculted=dict()
         self.distanceBetweenDroneAndPackage=dict()
         self.clientsMovementsProbabilitiesCalculated= dict()
+        self.calculatedActs= dict()
         self.packagesClientsWant = set()
 
-        self.initialNumberOfTurns = initial['turns to go']
+
+        self.initialNumberOfTurnes = initial['turns to go']
+        self.lastResetTurn=self.initialNumberOfTurnes
         self.timeToGain20Points=0
         self.timeToGain10Points=0
         self.flag20PointsCalculated= False
         self.initialNumberOfPackages= len(self.packages)
-
         for client, value in self.clients.items():
             for packagesClientWant in (set(value['packages'])):
                 self.packagesClientsWant.add(packagesClientWant)
 
     def act(self, state):
         state= copy.deepcopy(state)
-        if self.timeToGain20Points==0 and len(state['packages']) +2 == self.initialNumberOfPackages :
-                self.timeToGain20Points = self.initialNumberOfTurns - state['turns to go']
+        if self.initialNumberOfPackages==1 and len(state['packages'])==0:
+            if self.timeToGain20Points==0:
+                self.timeToGain20Points = 2*(self.initialNumberOfTurnes- state['turns to go'])
+            else:
+                timeSinceReset= self.lastResetTurn -state['turns to go']
+                self.timeToGain20Points= int(math.ceil((self.timeToGain20Points+ (2*timeSinceReset) )/2))
+        if self.initialNumberOfPackages>=2 and  len(state['packages']) +2 == self.initialNumberOfPackages :
+            if self.timeToGain20Points==0:
+                self.timeToGain20Points = self.initialNumberOfTurnes- state['turns to go']
+            else:
+                timeSinceReset= self.lastResetTurn -state['turns to go']
+                self.timeToGain20Points= int(math.ceil((self.timeToGain20Points+ timeSinceReset )/2))
+        if self.initialNumberOfPackages==0:
+            return "terminate"
         if len(state['packages'])==0:
-            if self.timeToGain20Points!=0:
-                if self.timeToGain20Points < state['turns to go']:
-                    return "reset"
-                return "terminate"
-            return "reset"
-        q=dict()
-        maxValueFound= 0
-        bestFirstActAFound=''
+            self.lastResetTurn= state['turns to go']
+            if self.timeToGain20Points==0:
+                return "reset"
+            if self.timeToGain20Points <= state['turns to go']:
+                return "reset"
+            return "terminate"
+        if (state['drones'].values(), state['drones'].values(), state['clients'].values()) in self.calculatedActs:
+            return self.calculatedActs[(state['drones'].values(), state['drones'].values(), state['clients'].values())]
         firstActions = self.getAllActions(state['drones'],state['packages'],state['clients'])
-        for action in firstActions:
-            if action[0]=="deliver" or action[0]=="pick up":
-                if len(self.dronesName) == 1:
-                    return (action,)
-                return action
-            droneResult, packageResult = self.getResultForAction(state['drones'],state['packages'], action)
-            newClientsLocation = self.getNewClientsLocation(state['clients'])
-            newValue = self.getImmediateReward(packageResult, droneResult, state['clients'])
-            if newValue >= maxValueFound:
-                maxValueFound = newValue
-                bestFirstActAFound = action
-            q[action] = ((copy.deepcopy(droneResult),copy.deepcopy(packageResult), copy.deepcopy(newClientsLocation),newValue))
-            # q.append((droneResult,packageResult,newClientsLocation, newValue, action))
-        time=1
-        while time< state['turns to go']:
-            newQ=dict()
-            for firstAct, values in q.items():
-                droneState= values[0]
-                packageState= values[1]
-                clientsState = values[2]
-                currentValue= values[3]
-                newClientsLocation= self.getNewClientsLocation(clientsState)
-                immediateReward = self.getImmediateReward(packageState, droneState, newClientsLocation)
-                if immediateReward:
-                    prob= self.findProbability(clientsState, newClientsLocation)
-                else:
-                    prob=0
-                actions= self.getAllActions(droneState,packageState,newClientsLocation)
-                bestActions, flagStopRunning= self.getBestActionsByHeuristic(droneState, packageState, newClientsLocation, actions)
-                if bestActions in q.keys():
-                    continue
-                if flagStopRunning:
-                    if len(self.dronesName) == 1:
-                        return (firstAct,)
-                    return firstAct
-                droneResult, packageResult= self.getResultForAction(droneState,packageState,bestActions)
-                newValue= currentValue+ self.factor*(immediateReward*prob)
-                if newValue >= maxValueFound:
-                    maxValueFound = newValue
-                    bestFirstActAFound = firstAct
-                    newQ[firstAct]=((copy.deepcopy(droneResult),copy.deepcopy(packageResult), copy.deepcopy(newClientsLocation),newValue))
-            q=newQ
-            time+=1
+        bestActions = self.getBestActionsByHeurisitic(state['drones'], state['packages'],state['clients'], firstActions)
+        return bestActions
+
+    def getBestActionsByHeurisitic(self,dronesState,packagesState, clients,actions):
+        packagesPickedUp=set()
+        dronesBestAction= dict()
+        for droneName,location in dronesState.items():
+            dronesBestAction[droneName]= self.findBestActionForSingleDrone(droneName,location,clients,actions,dronesState, packagesState,packagesPickedUp)
+            if dronesBestAction[droneName][0]=="pick up":
+                packagesPickedUp.add(dronesBestAction[droneName][2])
         if len(self.dronesName)==1:
-            return (bestFirstActAFound,)
-        return bestFirstActAFound
+            result=tuple(dronesBestAction.values())[0]
+            return (tuple(result),)
+        result=[]
+        for droneName,bestAction in dronesBestAction.items():
+            result.append(tuple(bestAction))
+        return tuple(result)
 
-    def findProbability(self, clientsState, newClientsLocation):
-        if ((clientsState.values(),newClientsLocation.values())) in self.clientsMovementsProbabilitiesCalculated.keys():
-            return self.actionsCalculated[((clientsState.values(), newClientsLocation.values()))]
-        prob=1
-        movements = [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]
-        for client,value in clientsState.items():
-            currentLocation= value['location']
-            previosLocation= newClientsLocation[client]['location']
-            for i in range (len(movements)):
-                move= movements[i]
-                if tuple(map(operator.add, previosLocation, move)) ==currentLocation:
-                    prob*= value['probabilities'][i]
-        self.actionsCalculated[((clientsState.values(), newClientsLocation.values()))]=prob
-        return prob
 
-    def getBestActionsByHeuristic(self, dronesState, packagesState, clients, actions):
-        dronesInitialDistance=dict()
-        initialH=0
-        for package, location in packagesState.items():
-            if location in self.dronesName:
-                distanceToClient=self.getShortestPathToClient(package, clients, location, dronesState)
-                dronesInitialDistance[location]= distanceToClient
-                initialH+=distanceToClient
-            else:
-                distanceToPackage= self.getShortestPathToPackage(location, dronesState)
-                dronesInitialDistance[location] =distanceToPackage
-                initialH += distanceToPackage
-        minHfound= float('inf')
+    def findBestActionForSingleDrone(self, droneName,dronesLocation,clients,actions,dronesState, packagesState,removedPickUpActionByPackage):
+        dronesAction=set()
+        packagesLocationWithDrone = [location for package, location in packagesState.items() if location == droneName]
+        packagesWithDrone = [package for package, location in packagesState.items() if location == droneName]
+        packagesForPickUp = [package for package, location in packagesState.items() if location not in self.dronesName]
+        clientsWhoWantDelivery= [client for client,value in clients.items() if set(value['packages']).intersection(set(packagesState.keys()))]
+        otherDronesForPickUp= [drone for drone,location in dronesState.items() if drone!=droneName and len([packageLocation for packageLocation in packagesLocationWithDrone if packageLocation==drone])<2]
+        if len(self.dronesName)>1:
+            for action in actions:
+                for atomicAction in action:
+                    if atomicAction[1]== droneName:
+                        if atomicAction[0] == "pick up" and atomicAction[2] in removedPickUpActionByPackage:
+                            break
+                        if not (atomicAction[0] == "pick up" and len(packagesWithDrone) > 0 and len(packagesForPickUp) == 1 and len(otherDronesForPickUp) and len(clientsWhoWantDelivery)>1):
+                            dronesAction.add(atomicAction)
+                        break
+            actions= tuple(dronesAction)
         actionResults= dict()
+        bestActionsFound= []
         for action in actions:
-            if action[0]=="deliver" or action[0]=="pick up":
-                return tuple(), True
-            hValue=0
-            drones,packages= self.getResultForAction(dronesState, packagesState, action)
-            for package,location in packages.items():
-                if location in self.dronesName:
-                    hValue+= self.getShortestPathToClient(package, clients,location, drones)
-                else:
-                    hValue += self.getShortestPathToPackage(location, drones)
-            actionResults[action]= hValue
-            if hValue< minHfound:
-                minHfound=hValue
-        result=actionResults.copy()
-        for action,value in actionResults.items():
-            if value > initialH or value > minHfound:
-                result.pop(action)
-        if len(result.keys())==1:
-            return tuple(result.keys())[0], False
-        return tuple(result.keys()), False
+            actionResults[action] = 0
+            if action[0] == "deliver":
+                bestActionsFound.append(action)
+            if action[0] == "pick up":
+                bestActionsFound.append(action)
+        if len(bestActionsFound)>0:
+            if len(bestActionsFound)==1 and tuple(bestActionsFound)[0]=="pick up":
+                return tuple(bestActionsFound)[0]
+            for action in bestActionsFound:
+                if action[0]== "deliver":
+                    return action
+            return tuple(bestActionsFound)[0]
+        minHfound= float('inf')
+        actionResults=dict()
+        actionDeliver= None
+        actionPickup=None
+        valueDeliver=0
+        valuePickUp=0
+        if len(packagesWithDrone)>=1:
+            valueDeliver, actionDeliver= self.findBestActionForFutureDeliver(droneName,dronesLocation, packagesWithDrone, clients,actions)
+        if len(packagesWithDrone)<2 and len(packagesForPickUp):
+            valuePickUp, actionPickup = self.findBestActionForFuturePickup(droneName, dronesLocation, packagesState,actions)
+        if actionDeliver == None and actionPickup==None:
+            if len(actions)==0:
+                a=3
+            return actions[0]
+        if actionDeliver== None:
+            return actionPickup
+        if actionPickup==None:
+            return actionDeliver
+        if valuePickUp>valueDeliver:
+            return actionDeliver
+        return actionPickup
 
-    def getShortestPathToPackage(self,package, drones):
-        minDistanceFound= float('inf')
-        x_package= package[0]
-        y_package = package[1]
-        for drone,location in drones.items():
-            x_drone = location[0]
-            y_drone = location[1]
-            dist= max(abs(x_package-x_drone), abs(y_package-y_drone))
-            if dist<minDistanceFound:
-                minDistanceFound=dist
-        return minDistanceFound
 
-    def getShortestPathToClient(self, packageToDeliver, clients,deliverDroneName,drones):
-        drones= copy.deepcopy(drones)
-        x_drone = drones[deliverDroneName][0]
-        y_drone = drones[deliverDroneName][1]
-        for client,value in clients.items():
-            if packageToDeliver in value['packages']:
-                return self.getDistanceBetweenDroneAndPackage(drones[deliverDroneName],value['location'],value['probabilities'])
-        return 0
-
-    def getDistanceBetweenDroneAndPackage(self, droneLocation, clientLocation, clientProbabilities):
-        if ((droneLocation, clientLocation, clientProbabilities)) in self.distanceBetweenDroneAndPackage.keys():
-            return self.distanceBetweenDroneAndPackage[(droneLocation, clientLocation, clientProbabilities)]
+    def findBestActionForFutureDeliver(self,droneName,dronesLocation, packagesWithDrone, clients,actions):
         movements = [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]
-        t=0
-        while clientLocation != droneLocation:
-            for _ in range(1000):
-                movement = random.choices(movements, weights=clientProbabilities)[0]
-                new_coordinates = (clientLocation[0] + movement[0], clientLocation[1] + movement[1])
-                if new_coordinates[0] < 0 or new_coordinates[1] < 0 or new_coordinates[0] >= len(self.map) or new_coordinates[1] >= len(self.map[0]):
-                    continue
-                break
+        x_drone = dronesLocation[0]
+        y_drone = dronesLocation[1]
+        minDistFound = float('inf')
+        if len(actions)==0:
+            a=2
+        bestActionFound = actions[0]
+        clientsForDeliver= [ [client,value]  for client, value in clients.items() if len(set(value['packages']).intersection(set(packagesWithDrone)))]
+        for client in clientsForDeliver:
+            clientLocation= client[1]['location']
+            dist = max(abs(clientLocation[0] - x_drone), abs(clientLocation[1] - y_drone))
+            if dist==1:
+                maxP=-1
+                nextClientLocation=tuple()
+                value= client[1]
+                for i in range (len(value['probabilities'])):
+                    new_coordinates = (clientLocation[0] + movements[i][0], clientLocation[1] + movements[i][1])
+                    if new_coordinates[0] < 0 or new_coordinates[1] < 0 or new_coordinates[0] >= len(self.map) or \
+                            new_coordinates[1] >= len(self.map[0]):
+                        continue
+                    if value['probabilities'][i]> maxP:
+                        maxP=value['probabilities'][i]
+                        nextClientLocation= new_coordinates
+                if dronesLocation== nextClientLocation:
+                    nextDroneAction= [action for action in actions if action[0]=="wait"]
+                else:
+                    nextDroneAction=[action for action in actions if len(action)>=3 and action[2]==nextClientLocation]
+                    if len(nextDroneAction)==0:
+                        nextDroneAction = [action for action in actions if action[0]!="wait" and max(abs(clientLocation[0] - action[2][0]), abs(clientLocation[1] - action[2][1]))]
+                if len(nextDroneAction)>1:
+                    nextDroneAction= nextDroneAction[0]
+                if nextDroneAction:
+                    result= tuple(nextDroneAction)
+                    if len(result)==1:
+                        result=result[0]
+                    return 1, result
             else:
-                new_coordinates = (clientLocation[0], clientLocation[1])
-            clientLocation = new_coordinates
-            minDist= max(abs(clientLocation[0]-droneLocation[0]), abs(clientLocation[1]-droneLocation[1]))
-            bestNextDroneLocation=droneLocation
-            for movement in movements:
-                newDroneCoordinated= (clientLocation[0] + movement[0], clientLocation[1] + movement[1])
-                newDist= max(abs(clientLocation[0]-newDroneCoordinated[0]), abs(clientLocation[1]-newDroneCoordinated[1]))
-                if newDist< minDist:
-                    minDist= newDist
-                    bestNextDroneLocation= newDroneCoordinated
-            t+=1
-            droneLocation=bestNextDroneLocation
-        self.distanceBetweenDroneAndPackage[(droneLocation, clientLocation, clientProbabilities)]= t
-        return t
+                for action in actions:
+                    if action[0] == "wait":
+                        continue
+                    dist=max(abs(clientLocation[0] - action[2][0]), abs(clientLocation[1] - action[2][1]))
+                    if dist< minDistFound:
+                        minDistFound=dist
+                        bestActionFound=action
+        return minDistFound, bestActionFound
+
+    def findBestActionForFuturePickup(self,droneName, dronesLocation, packages,actions):
+        minDistFound = float('inf')
+        bestActionFound = ''
+        x_drone = dronesLocation[0]
+        y_drone = dronesLocation[1]
+        packagesForPickUp= [location  for package,location in packages.items() if not(location in self.dronesName)]
+        for action in actions:
+            for packageLocation in packagesForPickUp:
+                if action[0]=="wait":
+                    dist=1
+                    dist+=max(abs(packageLocation[0] - x_drone), abs(packageLocation[1] -y_drone))
+                else:
+                    dist = max(abs(packageLocation[0] - action[2][0]), abs(packageLocation[1] -action[2][1]))
+                if dist < minDistFound:
+                    minDistFound = dist
+                    bestActionFound = action
+        if minDistFound == float('inf'):
+            a=2
+        return minDistFound, bestActionFound
+
 
     def getAllActions(self,drones,packages,clients ):
         drones= copy.deepcopy(drones)
         packages = copy.deepcopy(packages)
         clients = copy.deepcopy(clients)
-        if ((drones.values(),packages.values(),clients.values())) in self.actionsCalculated.keys():
-            return self.actionsCalculated[((drones.values(), packages.values(), clients.values()))]
+        if ((drones.values(),packages.values(),clients.values())) in self.actionsCalculted.keys():
+            return self.actionsCalculted[((drones.values(),packages.values(),clients.values()))]
         currentClientLocations=set([value['location'] for client,value in clients.items()])
         dronesWithPackages= set([location for package,location in packages.items() if location in self.dronesName])
         actions = dict()
@@ -249,7 +256,7 @@ class DroneAgent:
             actions[droneName] = currDroneActions
         if len(drones) == 1:
             res= [act for act in actions.values()][0]
-            self.actionsCalculated[((drones.values(), packages.values(), clients.values()))] = res
+            self.actionsCalculted[((drones.values(), packages.values(), clients.values()))] = res
             return res
         dataMatrix =[actions[i] for i in actions.keys()]
         res= list(itertools.product(*dataMatrix))
@@ -265,21 +272,26 @@ class DroneAgent:
                         break
                     pickUpPackages.add(droneAction[2])
         finalRes= [res[i] for i in range (len(res)) if i not in index]
-        self.actionsCalculated[((drones.values(), packages.values(), clients.values()))]= finalRes
+        self.actionsCalculted[((drones.values(), packages.values(), clients.values()))]= finalRes
         return finalRes
+
 
     def getResultForAction(self,drones,packages,action):
         """Returns all the actions that can be executed in the given
         state. The result should be a tuple (or other iterable) of actions
         as defined in the problem description file"""
         # if action == "reset":
-        #     self.reset_environment()
+        #     # self.reset_environment()
         #     return
         # if action == "terminate":
-        #     self.terminate_execution()
+        #     # self.terminate_execution()
+        while len(action)==1:
+            action=action[0]
         drones= copy.deepcopy(drones)
         packages = copy.deepcopy(packages)
         action = copy.deepcopy(action)
+        if len(action) == 1:
+            a = 2
         if action[1] in self.dronesName:
             action_name = action[0]
             drone_name = action[1]
@@ -320,51 +332,3 @@ class DroneAgent:
                     packages.pop(package)
         return drones,packages
 
-    def getNewClientsLocation(self,clients):
-        movements = [(-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)]
-        for client, properties in clients.items():
-            for _ in range(1000):
-                movement = random.choices(movements, weights=properties["probabilities"])[0]
-                new_coordinates = (properties["location"][0] + movement[0], properties["location"][1] + movement[1])
-                if new_coordinates[0] < 0 or new_coordinates[1] < 0 or new_coordinates[0] >= len(self.map) or \
-                        new_coordinates[1] >= len(self.map[0]):
-                    continue
-                break
-            else:
-                new_coordinates = (properties["location"][0], properties["location"][1])
-            assert new_coordinates
-            properties["location"] = new_coordinates
-        return clients
-
-    def getImmediateReward(self, packages, drones, clients):
-        reward=0
-        packagesLocation= set(packages.values())
-        packeagesToDeliver= packagesLocation.intersection(self.dronesName)
-        if len(packeagesToDeliver):
-            for client,value in clients.items():
-                packagesClientWant= set(value['packages'])
-                dronesInCurrentLocation =set([droneName for droneName,location in drones.items() if location==value['location']])
-                packagesToDeliverToClient= [package for package,location in packages.items() if package in packagesClientWant and location in dronesInCurrentLocation]
-                result= len(packagesToDeliverToClient)
-                if result:
-                    reward+= 10*result
-        return reward
-
-    # def reset_environment(self, initial):
-    #     self.map = initial['map']
-    #     self.drones = copy.deepcopy(initial['drones'])
-    #     self.dronesName = set(self.drones.keys())
-    #     self.packages = copy.deepcopy(initial['packages'])
-    #     self.clients = copy.deepcopy(initial['clients'])
-    #     self.turnsToGo -= 1
-    #     self.factor = 1
-    #     self.actionsCalculated = dict()
-    #     self.distanceBetweenDroneAndPackage = dict()
-    #     self.clientsMovementsProbabilitiesCalculated = dict()
-    #     self.packagesClientsWant = set()
-    #     self.initialNumberOfPackages = len(self.packages)
-    #
-    # def terminate_execution(self):
-    #     print(f"End of game, your score is {self.score}!")
-    #     print(f"-----------------------------------")
-    #     raise EndOfGame

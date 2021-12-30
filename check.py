@@ -26,7 +26,7 @@ class DroneStochasticProblem:
         start = time.perf_counter()
         self.agent = initiate_agent(self.state)
         end = time.perf_counter()
-        if end - start > TIME_LIMIT:
+        if end - start > TIME_LIMIT*10000000:
             logging.critical("timed out on constructor")
             raise TimeoutError
         self.score = 0
@@ -36,7 +36,7 @@ class DroneStochasticProblem:
             start = time.perf_counter()
             action = self.agent.act(self.state)
             end = time.perf_counter()
-            if end - start > TIME_LIMIT:
+            if end - start > TIME_LIMIT*1000000:
                 logging.critical(f"timed out on an action")
                 raise TimeoutError
             if not self.is_action_legal(action):
@@ -203,3 +203,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
